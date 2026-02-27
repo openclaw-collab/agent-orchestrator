@@ -178,6 +178,13 @@ export interface SessionSpawnConfig {
   prompt?: string;
   /** Override the agent plugin for this session (e.g. "codex", "claude-code") */
   agent?: string;
+  /** FORGE debate context for role-based sessions */
+  forgeContext?: {
+    debateId: string;
+    debatePlanPath: string;
+    role: string;
+    phase: string;
+  };
 }
 
 /** Config for creating an orchestrator session */
@@ -742,7 +749,13 @@ export type EventType =
   | "reaction.triggered"
   | "reaction.escalated"
   // Summary
-  | "summary.all_complete";
+  | "summary.all_complete"
+  // FORGE debate lifecycle
+  | "forge.debate.started"
+  | "forge.phase.completed"
+  | "forge.role.completed"
+  | "forge.debate.completed"
+  | "forge.debate.failed";
 
 /** An event emitted by the orchestrator */
 export interface OrchestratorEvent {
@@ -982,6 +995,13 @@ export interface SessionMetadata {
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;
+  // FORGE debate integration
+  forgeDebateId?: string;
+  forgeRole?: string;
+  forgePhase?: string;
+  forgeStatus?: string;
+  forgeOutputFile?: string;
+  forgePlanPath?: string;
 }
 
 // =============================================================================
@@ -1095,4 +1115,109 @@ export class WorkspaceMissingError extends Error {
     super(`Workspace missing at ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "WorkspaceMissingError";
   }
+}
+
+// =============================================================================
+// FORGE DEBATE SYSTEM
+// =============================================================================
+
+/**
+ * FORGE — Multi-Agent Debate System
+ *
+ * FORGE orchestrates structured debates between multiple AI agents,
+ * each taking on a specific role (architect, reviewer, tester, etc.)
+ * to collaboratively solve complex problems.
+ */
+
+/** A debate role definition */
+export interface DebateRole {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  model?: string;
+  permissions?: "skip" | "default";
+}
+
+/** A debate phase definition */
+export interface DebatePhase {
+  name: string;
+  description: string;
+  order: number;
+  roles: string[]; // Role names participating in this phase
+  completionCriteria?: string;
+  timeout?: number; // Minutes
+}
+
+/** A debate plan loaded from a YAML file */
+export interface DebatePlan {
+  id: string;
+  name: string;
+  description: string;
+  problem: string;
+  projectId: string;
+  roles: DebateRole[];
+  phases: DebatePhase[];
+  maxRounds?: number;
+  createdAt: Date;
+}
+
+/** Debate status for tracking progress */
+export interface DebateStatus {
+  id: string;
+  planId: string;
+  name: string;
+  projectId: string;
+  state: "pending" | "running" | "paused" | "completed" | "failed";
+  currentPhase: string | null;
+  currentRound: number;
+  maxRounds: number;
+  roles: Array<{
+    name: string;
+    sessionId: string | null;
+    status: "pending" | "running" | "completed" | "failed";
+  }>;
+  phases: Array<{
+    name: string;
+    status: "pending" | "running" | "completed" | "failed";
+    startedAt?: Date;
+    completedAt?: Date;
+  }>;
+  outputFile: string | null;
+  planPath: string;
+  createdAt: Date;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  error?: string;
+}
+
+/** A debate instance */
+export interface Debate {
+  id: string;
+  plan: DebatePlan;
+  status: DebateStatus;
+  sessions: Map<string, string>; // role name -> sessionId
+}
+
+/** FORGE Manager — CRUD for debates */
+export interface ForgeManager {
+  /** Create a new debate from a plan file */
+  createDebate(planPath: string, projectId: string): Promise<Debate>;
+
+  /** Spawn all sessions for a debate */
+  spawnDebateRoles(debateId: string): Promise<DebateStatus>;
+
+  /** Get current status of a debate */
+  getDebateStatus(debateId: string): Promise<DebateStatus | null>;
+
+  /** Kill all sessions for a debate */
+  killDebate(debateId: string): Promise<void>;
+
+  /** List all debates */
+  listDebates(): Promise<DebateStatus[]>;
+
+  /** Advance to the next phase */
+  advancePhase(debateId: string): Promise<DebateStatus>;
+
+  /** Complete a debate and collect outputs */
+  completeDebate(debateId: string, success: boolean, error?: string): Promise<void>;
 }

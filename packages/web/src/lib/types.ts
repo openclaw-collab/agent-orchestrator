@@ -55,6 +55,16 @@ export type AttentionLevel = "merge" | "respond" | "review" | "pending" | "worki
  * TODO: When wiring to real data, add a serialization layer that converts
  * core Session (Date objects) → DashboardSession (string dates).
  */
+/** FORGE debate context for a session */
+export interface DashboardForgeContext {
+  debateId: string;
+  role: string;
+  phase: string;
+  status: "pending" | "running" | "completed" | "failed";
+  outputFile: string | null;
+  planPath: string;
+}
+
 export interface DashboardSession {
   id: string;
   projectId: string;
@@ -72,6 +82,8 @@ export interface DashboardSession {
   lastActivityAt: string;
   pr: DashboardPR | null;
   metadata: Record<string, string>;
+  /** FORGE debate context if this session is part of a debate */
+  forge?: DashboardForgeContext;
 }
 
 /**

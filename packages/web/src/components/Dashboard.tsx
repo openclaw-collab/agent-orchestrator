@@ -13,6 +13,7 @@ import { CI_STATUS } from "@composio/ao-core/types";
 import { AttentionZone } from "./AttentionZone";
 import { PRTableRow } from "./PRStatus";
 import { DynamicFavicon } from "./DynamicFavicon";
+import { ForgeWorkflow } from "./ForgeWorkflow";
 
 interface DashboardProps {
   sessions: DashboardSession[];
@@ -87,6 +88,9 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
 
   const hasKanbanSessions = KANBAN_LEVELS.some((l) => grouped[l].length > 0);
 
+  // Check if any sessions are part of a FORGE debate
+  const hasForgeSessions = sessions.some((s) => s.forge);
+
   const anyRateLimited = useMemo(
     () => sessions.some((s) => s.pr && isPRRateLimited(s.pr)),
     [sessions],
@@ -116,6 +120,9 @@ export function Dashboard({ sessions, stats, orchestratorId, projectName }: Dash
           </a>
         )}
       </div>
+
+      {/* FORGE Debates */}
+      {hasForgeSessions && <ForgeWorkflow sessions={sessions} />}
 
       {/* Rate limit notice */}
       {anyRateLimited && !rateLimitDismissed && (

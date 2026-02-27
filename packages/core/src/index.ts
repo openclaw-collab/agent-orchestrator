@@ -62,6 +62,10 @@ export type { OrchestratorPromptConfig } from "./orchestrator-prompt.js";
 // Shared utilities
 export { shellEscape, escapeAppleScript, validateUrl, readLastJsonlEntry } from "./utils.js";
 
+// FORGE manager — multi-agent debate system
+export { createForgeManager } from "./forge-manager.js";
+export type { ForgeManagerDeps } from "./forge-manager.js";
+
 // Path utilities — hash-based directory structure
 export {
   generateConfigHash,

@@ -82,6 +82,96 @@ Eight slots. Every abstraction is swappable.
 
 All interfaces defined in [`packages/core/src/types.ts`](packages/core/src/types.ts). A plugin implements one interface and exports a `PluginModule`. That's it.
 
+## FORGE Multi-Agent Debates
+
+FORGE orchestrates structured debates between multiple AI agents, each taking on a specific role (architect, reviewer, tester, etc.) to collaboratively solve complex problems.
+
+### How FORGE Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     FORGE Debate                            │
+├─────────────────────────────────────────────────────────────┤
+│  Phase 1: Design                                             │
+│    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │
+│    │  Architect  │  │  Reviewer   │  │   Tester    │       │
+│    │   Agent     │  │   Agent     │  │   Agent     │       │
+│    └─────────────┘  └─────────────┘  └─────────────┘       │
+├─────────────────────────────────────────────────────────────┤
+│  Phase 2: Implementation                                     │
+│    ┌─────────────┐  ┌─────────────┐                         │
+│    │  Developer  │  │  Reviewer   │                         │
+│    │   Agent     │  │   Agent     │                         │
+│    └─────────────┘  └─────────────┘                         │
+├─────────────────────────────────────────────────────────────┤
+│  Phase 3: Validation                                         │
+│    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │
+│    │   Tester    │  │  Security   │  │  Documenter │       │
+│    │   Agent     │  │   Agent     │  │   Agent     │       │
+│    └─────────────┘  └─────────────┘  └─────────────┘       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Usage
+
+```bash
+# Create a debate from a plan file
+ao forge init debate-plan.yaml my-project
+
+# Start the debate (spawns all agent sessions)
+ao forge run forge-1234567890-abc123
+
+# Check debate status
+ao forge status forge-1234567890-abc123
+
+# List all debates
+ao forge status
+
+# Stop a debate
+ao forge kill forge-1234567890-abc123
+```
+
+### Debate Plan Example
+
+```yaml
+# debate-plan.yaml
+name: "API Design Review"
+description: "Design and review a new REST API endpoint"
+problem: "Design a scalable user authentication API with rate limiting"
+
+roles:
+  - name: architect
+    description: "Senior system architect"
+    systemPrompt: "You are an experienced system architect. Focus on scalability, reliability, and maintainability."
+    model: "claude-opus-4"
+
+  - name: reviewer
+    description: "Code reviewer"
+    systemPrompt: "You are a thorough code reviewer. Identify edge cases, security issues, and potential bugs."
+
+  - name: tester
+    description: "QA engineer"
+    systemPrompt: "You are a QA engineer. Design comprehensive test cases and identify failure modes."
+
+phases:
+  - name: design
+    description: "Design the API structure"
+    roles: [architect, reviewer]
+    completionCriteria: "API contract is defined and reviewed"
+
+  - name: implementation
+    description: "Implement the API"
+    roles: [architect]
+    completionCriteria: "Working implementation is complete"
+
+  - name: validation
+    description: "Validate the implementation"
+    roles: [reviewer, tester]
+    completionCriteria: "All tests pass and code is approved"
+
+maxRounds: 2
+```
+
 ## Configuration
 
 ```yaml

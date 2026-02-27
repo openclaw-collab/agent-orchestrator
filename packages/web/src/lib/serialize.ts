@@ -15,7 +15,7 @@ import type {
   OrchestratorConfig,
   PluginRegistry,
 } from "@composio/ao-core";
-import type { DashboardSession, DashboardPR, DashboardStats } from "./types.js";
+import type { DashboardSession, DashboardPR, DashboardStats, DashboardForgeContext } from "./types.js";
 import { TTLCache, prCache, prCacheKey, type PREnrichmentData } from "./cache";
 
 /** Cache for issue titles (5 min TTL — issue titles rarely change) */
@@ -37,6 +37,21 @@ export function resolveProject(
   // Fall back to first project
   const firstKey = Object.keys(projects)[0];
   return firstKey ? projects[firstKey] : undefined;
+}
+
+/** Extract FORGE context from session metadata */
+function extractForgeContext(metadata: Record<string, string>): DashboardForgeContext | undefined {
+  const debateId = metadata["forgeDebateId"];
+  if (!debateId) return undefined;
+
+  return {
+    debateId,
+    role: metadata["forgeRole"] || "unknown",
+    phase: metadata["forgePhase"] || "unknown",
+    status: (metadata["forgeStatus"] as DashboardForgeContext["status"]) || "pending",
+    outputFile: metadata["forgeOutputFile"] || null,
+    planPath: metadata["forgePlanPath"] || "",
+  };
 }
 
 /** Convert a core Session to a DashboardSession (without PR/issue enrichment). */
@@ -62,6 +77,7 @@ export function sessionToDashboard(session: Session): DashboardSession {
     lastActivityAt: session.lastActivityAt.toISOString(),
     pr: session.pr ? basicPRToDashboard(session.pr) : null,
     metadata: session.metadata,
+    forge: extractForgeContext(session.metadata),
   };
 }
 
