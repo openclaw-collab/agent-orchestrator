@@ -185,6 +185,8 @@ export interface SessionSpawnConfig {
     role: string;
     phase: string;
   };
+  /** Additional environment variables for the session */
+  env?: Record<string, string>;
 }
 
 /** Config for creating an orchestrator session */

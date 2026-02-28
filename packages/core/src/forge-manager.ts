@@ -23,6 +23,50 @@ import type {
 import { getSessionsDir, getProjectBaseDir } from "./paths.js";
 import { writeMetadata, readMetadataRaw, listMetadata, deleteMetadata } from "./metadata.js";
 
+/** Bootstrap FORGE workspace structure */
+async function bootstrapForgeWorkspace(projectPath: string, planPath: string): Promise<void> {
+  const forgeDir = join(projectPath, ".claude", "forge");
+  const knowledgeDir = join(forgeDir, "knowledge");
+  const phasesDir = join(projectPath, "docs", "forge", "phases");
+  const handoffsDir = join(projectPath, "docs", "forge", "handoffs");
+  const debateDir = join(projectPath, "docs", "forge", "debate");
+
+  // Create directory structure
+  for (const dir of [forgeDir, knowledgeDir, phasesDir, handoffsDir, debateDir]) {
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+  }
+
+  // Create knowledge template files if they don't exist
+  const knowledgeFiles = [
+    { name: "brief.md", title: "Project Brief", content: "# Project Brief\n\n<!-- PRD content will be loaded here -->\n" },
+    { name: "assumptions.md", title: "Assumptions", content: "# Assumptions\n\n| ID | Assumption | Status | Date |\n|----|------------|--------|------|\n" },
+    { name: "decisions.md", title: "Decisions", content: "# Decisions\n\n| ID | Decision | Rationale | Date | Supersedes |\n|----|----------|-----------|------|------------|\n" },
+    { name: "constraints.md", title: "Constraints", content: "# Constraints\n\n| ID | Constraint | Source |\n|----|------------|--------|\n" },
+    { name: "risks.md", title: "Risks", content: "# Risks\n\n| ID | Risk | Severity | Mitigation | Owner |\n|----|------|----------|------------|-------|\n" },
+    { name: "glossary.md", title: "Glossary", content: "# Glossary\n\n| Term | Definition | Context |\n|------|------------|---------|\n" },
+    { name: "traceability.md", title: "Traceability", content: "# Traceability Matrix\n\n| Req ID | Source | Implementation | Test | Status |\n|--------|--------|----------------|------|--------|\n" },
+  ];
+
+  for (const file of knowledgeFiles) {
+    const filePath = join(knowledgeDir, file.name);
+    if (!existsSync(filePath)) {
+      writeFileSync(filePath, file.content, "utf-8");
+    }
+  }
+
+  // Copy PRD to brief.md if plan exists and brief is empty/template
+  const briefPath = join(knowledgeDir, "brief.md");
+  if (existsSync(planPath) && existsSync(briefPath)) {
+    const briefContent = readFileSync(briefPath, "utf-8");
+    if (briefContent.includes("<!-- PRD content will be loaded here -->")) {
+      const planContent = readFileSync(planPath, "utf-8");
+      writeFileSync(briefPath, `# Project Brief\n\nGenerated from debate plan.\n\n---\n\n${planContent}`, "utf-8");
+    }
+  }
+}
+
 /** FORGE metadata stored in session files */
 interface ForgeMetadata {
   debateId: string;
@@ -270,16 +314,28 @@ export function createForgeManager(deps: ForgeManagerDeps): ForgeManager {
       const rolePrompt = buildRolePrompt(plan, role, firstPhase);
 
       try {
-        // Spawn session with FORGE context
+        // Bootstrap FORGE workspace structure before spawning
+        await bootstrapForgeWorkspace(project.path, status.planPath);
+
+        // Spawn session with FORGE context and environment variables
         const session = await sessionManager.spawn({
           projectId: status.projectId,
           prompt: rolePrompt,
-          agent: role.model ? undefined : undefined, // Use project default or role-specific
+          agent: role.model || undefined, // Use role-specific model if specified
           forgeContext: {
             debateId,
             debatePlanPath: status.planPath,
             role: role.name,
             phase: firstPhase.name,
+          },
+          env: {
+            AO_FORGE_DEBATE_ID: debateId,
+            AO_FORGE_ROLE: role.name,
+            AO_FORGE_PHASE: firstPhase.name,
+            AO_FORGE_PROJECT_ID: status.projectId,
+            AO_FORGE_PLAN_PATH: status.planPath,
+            AO_FORGE_OUTPUT_FILE: status.outputFile || "",
+            CLAUDE_ENV: "forge", // Signal FORGE mode to Claude Code
           },
         });
 

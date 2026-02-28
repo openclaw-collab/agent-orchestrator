@@ -4,6 +4,121 @@ import type { Command } from "commander";
 import { loadConfig } from "@composio/ao-core";
 import { getForgeManager } from "../lib/create-forge-manager.js";
 import { banner } from "../lib/format.js";
+import { readFileSync, existsSync } from "node:fs";
+import { parse as parseYaml } from "yaml";
+
+/**
+ * Parse a BMAD PRD file and extract key information
+ */
+function parsePRD(prdPath: string): { name: string; description: string; problem: string; requirements: string[] } {
+  if (!existsSync(prdPath)) {
+    throw new Error(`PRD file not found: ${prdPath}`);
+  }
+
+  const content = readFileSync(prdPath, "utf-8");
+
+  // Try to parse YAML frontmatter
+  let frontmatter: Record<string, unknown> = {};
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+  if (fmMatch) {
+    try {
+      frontmatter = parseYaml(fmMatch[1]) as Record<string, unknown>;
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  // Extract project name from title
+  const titleMatch = content.match(/^#\s+(.+)$/m);
+  const name = frontmatter.project_name as string ||
+               frontmatter.name as string ||
+               (titleMatch ? titleMatch[1].replace(/^Product Requirements Document\s*[-–]\s*/, "").trim() : "FORGE Project");
+
+  // Extract description from Executive Summary or first paragraph
+  const execSummaryMatch = content.match(/##\s*Executive Summary\s*\n\n([\s\S]*?)(?=\n##|\n*$)/i);
+  const firstParaMatch = content.match(/\n\n([^#\n][^\n]*\n)/);
+  const description = execSummaryMatch ?
+    execSummaryMatch[1].trim().slice(0, 200) :
+    (firstParaMatch ? firstParaMatch[1].trim().slice(0, 200) : "FORGE workflow from PRD");
+
+  // Extract functional requirements
+  const frMatch = content.match(/##\s*Functional Requirements\s*\n\n([\s\S]*?)(?=\n##|\n*$)/i);
+  const requirements: string[] = [];
+  if (frMatch) {
+    const frSection = frMatch[1];
+    const frLines = frSection.match(/^-\s+.+$/gm);
+    if (frLines) {
+      frLines.forEach(line => {
+        const req = line.replace(/^-\s+/, "").trim();
+        if (req) requirements.push(req);
+      });
+    }
+  }
+
+  // Build problem statement from requirements
+  const problem = requirements.length > 0
+    ? `Implement: ${requirements.slice(0, 3).join("; ")}${requirements.length > 3 ? "..." : ""}`
+    : description;
+
+  return { name, description, problem, requirements };
+}
+
+/**
+ * Create a debate plan YAML from PRD content
+ */
+function createDebatePlanFromPRD(prdInfo: ReturnType<typeof parsePRD>): string {
+  const plan = {
+    id: `prd-${Date.now()}`,
+    name: prdInfo.name,
+    description: prdInfo.description,
+    problem: prdInfo.problem,
+    roles: [
+      {
+        name: "advocate",
+        description: "Champions the primary implementation approach",
+        systemPrompt: "You are the ADVOCATE. Make the strongest case FOR the leading implementation option. Emphasize strengths, comparative advantages, and success criteria.",
+      },
+      {
+        name: "skeptic",
+        description: "Probes weaknesses and challenges assumptions",
+        systemPrompt: "You are the SKEPTIC. Challenge assumptions, find failure modes, and identify risks. Ask 'what could go wrong?'",
+      },
+      {
+        name: "operator",
+        description: "Assesses implementation feasibility",
+        systemPrompt: "You are the OPERATOR. Assess feasibility from ground truth. Consider resources, timeline, dependencies, and operational constraints.",
+      },
+      {
+        name: "synthesizer",
+        description: "Reconciles positions and produces decision",
+        systemPrompt: "You are the SYNTHESIZER. Read all positions, resolve tradeoffs, and produce a clear, actionable decision with rationale.",
+      },
+    ],
+    phases: [
+      {
+        name: "explore",
+        description: "Explore implementation approaches",
+        roles: ["advocate", "skeptic"],
+        completionCriteria: "Multiple approaches documented with tradeoffs",
+      },
+      {
+        name: "validate",
+        description: "Validate feasibility and risks",
+        roles: ["operator", "skeptic"],
+        completionCriteria: "Feasibility confirmed, risks identified",
+      },
+      {
+        name: "decide",
+        description: "Make final implementation decision",
+        roles: ["synthesizer"],
+        completionCriteria: "Clear decision with rationale documented",
+      },
+    ],
+    maxRounds: 1,
+  };
+
+  return JSON.stringify(plan, null, 2);
+}
 
 export function registerForge(program: Command): void {
   const forge = program
@@ -182,6 +297,65 @@ export function registerForge(program: Command): void {
         spinner.succeed(`Debate ${chalk.green(debateId)} killed`);
       } catch (err) {
         spinner.fail("Failed to kill debate");
+        console.error(chalk.red(`✗ ${err}`));
+        process.exit(1);
+      }
+    });
+
+  // forge init-from-prd — Create a debate from a BMAD PRD file
+  forge
+    .command("init-from-prd")
+    .description("Create a FORGE debate from a BMAD-generated PRD")
+    .argument("<prd>", "Path to PRD markdown file")
+    .argument("<project>", "Project ID from config")
+    .option("--output <path>", "Save generated plan to this path")
+    .action(async (prdPath: string, projectId: string, options: { output?: string }) => {
+      const config = loadConfig();
+
+      if (!config.projects[projectId]) {
+        console.error(
+          chalk.red(
+            `Unknown project: ${projectId}\nAvailable: ${Object.keys(config.projects).join(", ")}`,
+          ),
+        );
+        process.exit(1);
+      }
+
+      const spinner = ora("Parsing PRD").start();
+
+      try {
+        // Parse PRD
+        const prdInfo = parsePRD(prdPath);
+        spinner.succeed(`Parsed PRD: ${chalk.green(prdInfo.name)}`);
+
+        // Create debate plan from PRD
+        spinner.start("Generating debate plan");
+        const planYaml = createDebatePlanFromPRD(prdInfo);
+
+        // Save plan to temp file or specified output
+        const planPath = options.output || `/tmp/forge-plan-${Date.now()}.yaml`;
+        const { writeFileSync } = await import("node:fs");
+        writeFileSync(planPath, planYaml, "utf-8");
+        spinner.succeed(`Generated debate plan: ${chalk.dim(planPath)}`);
+
+        // Create debate
+        spinner.start("Creating FORGE debate");
+        const fm = await getForgeManager(config);
+        const debate = await fm.createDebate(planPath, projectId);
+
+        spinner.succeed(`Debate ${chalk.green(debate.id)} created`);
+        console.log();
+        console.log(`  Name: ${chalk.dim(debate.plan.name)}`);
+        console.log(`  Project: ${chalk.dim(projectId)}`);
+        console.log(`  Roles: ${chalk.dim(debate.plan.roles.map((r: { name: string }) => r.name).join(", "))}`);
+        console.log(`  Phases: ${chalk.dim(debate.plan.phases.map((p: { name: string }) => p.name).join(", "))}`);
+        console.log();
+        console.log(`Next steps:`);
+        console.log(`  1. Run ${chalk.cyan(`ao forge run ${debate.id}`)} to spawn role sessions`);
+        console.log(`  2. Or start the FORGE session directly:`);
+        console.log(`     ${chalk.cyan(`ao spawn ${projectId} "Initialize FORGE workflow" --forge-debate ${debate.id}`)}`);
+      } catch (err) {
+        spinner.fail("Failed to create debate from PRD");
         console.error(chalk.red(`✗ ${err}`));
         process.exit(1);
       }

@@ -493,6 +493,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           AO_DATA_DIR: sessionsDir, // Pass sessions directory (not root dataDir)
           AO_SESSION_NAME: sessionId, // User-facing session name
           ...(tmuxName && { AO_TMUX_NAME: tmuxName }), // Tmux session name if using new arch
+          ...(spawnConfig.env || {}), // Additional environment variables from spawn config
         },
       });
     } catch (err) {
