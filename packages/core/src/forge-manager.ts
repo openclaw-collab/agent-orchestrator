@@ -5,7 +5,7 @@
  * each taking on a specific role to collaboratively solve complex problems.
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, watch } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parse as parseYaml } from "yaml";
@@ -22,6 +22,46 @@ import type {
 } from "./types.js";
 import { getSessionsDir, getProjectBaseDir } from "./paths.js";
 import { writeMetadata, readMetadataRaw, listMetadata, deleteMetadata } from "./metadata.js";
+
+/** Watch for debate completion and auto-advance phase */
+function watchDebateCompletion(
+  configPath: string,
+  projectPath: string,
+  debateId: string,
+  status: DebateStatus,
+  advancePhaseFn: (debateId: string) => Promise<DebateStatus>
+): void {
+  const debateDir = join(projectPath, "docs", "forge", "debate", debateId);
+  const synthesisPath = join(debateDir, "synthesis.md");
+
+  // If synthesis already exists, advance immediately
+  if (existsSync(synthesisPath)) {
+    console.log(`[FORGE] Debate ${debateId} already complete, advancing phase...`);
+    advancePhaseFn(debateId).catch((err) => {
+      console.error(`[FORGE] Failed to advance phase for ${debateId}:`, err);
+    });
+    return;
+  }
+
+  console.log(`[FORGE] Watching for debate completion: ${debateId}`);
+
+  // Watch for synthesis.md creation
+  const watcher = watch(debateDir, (eventType, filename) => {
+    if (filename === "synthesis.md" && existsSync(synthesisPath)) {
+      console.log(`[FORGE] Debate synthesis detected for ${debateId}, advancing phase...`);
+      watcher.close();
+      advancePhaseFn(debateId).catch((err) => {
+        console.error(`[FORGE] Failed to advance phase for ${debateId}:`, err);
+      });
+    }
+  });
+
+  // Timeout after 30 minutes (debates shouldn't hang forever)
+  setTimeout(() => {
+    watcher.close();
+    console.log(`[FORGE] Debate ${debateId} watch timeout (30min)`);
+  }, 30 * 60 * 1000);
+}
 
 /** Bootstrap FORGE workspace structure */
 async function bootstrapForgeWorkspace(projectPath: string, planPath: string): Promise<void> {
@@ -317,6 +357,20 @@ export function createForgeManager(deps: ForgeManagerDeps): ForgeManager {
         // Bootstrap FORGE workspace structure before spawning
         await bootstrapForgeWorkspace(project.path, status.planPath);
 
+        // Determine FORGE system prompt path
+        // Check workspace first (may have been customized), then fall back to plugin
+        const workspaceSystemPrompt = join(project.path, ".claude", "forge", "system-prompt.md");
+        const pluginSystemPrompt = join(
+          dirname(dirname(__dirname)), // packages/core/src/ -> packages/ -> root
+          "..", // Go up to agent-orchestrator
+          "integrations",
+          "agent-orchestrator",
+          "forge-system-prompt.md"
+        );
+        const systemPromptFile = existsSync(workspaceSystemPrompt)
+          ? workspaceSystemPrompt
+          : pluginSystemPrompt;
+
         // Spawn session with FORGE context and environment variables
         const session = await sessionManager.spawn({
           projectId: status.projectId,
@@ -337,6 +391,7 @@ export function createForgeManager(deps: ForgeManagerDeps): ForgeManager {
             AO_FORGE_OUTPUT_FILE: status.outputFile || "",
             CLAUDE_ENV: "forge", // Signal FORGE mode to Claude Code
           },
+          systemPromptFile: existsSync(systemPromptFile) ? systemPromptFile : undefined,
         });
 
         // Update role status
@@ -368,6 +423,16 @@ export function createForgeManager(deps: ForgeManagerDeps): ForgeManager {
     }
 
     saveDebateStatus(config.configPath, project.path, status);
+
+    // Start watching for debate completion
+    watchDebateCompletion(
+      config.configPath,
+      project.path,
+      debateId,
+      status,
+      advancePhase
+    );
+
     return status;
   }
 

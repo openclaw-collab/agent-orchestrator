@@ -360,4 +360,77 @@ export function registerForge(program: Command): void {
         process.exit(1);
       }
     });
+
+  // forge desloppify — Spawn an autonomous desloppify quality agent
+  forge
+    .command("desloppify")
+    .description("Spawn an autonomous desloppify quality agent")
+    .argument("<project>", "Project ID from config")
+    .option("--target <score>", "Target strict score", "95")
+    .option("--path <dir>", "Directory to scan", ".")
+    .option("--once", "Run a single scan/fix cycle")
+    .action(async (projectId: string, options: { target: string; path: string; once?: boolean }) => {
+      const config = loadConfig();
+
+      if (!config.projects[projectId]) {
+        console.error(chalk.red(`Unknown project: ${projectId}`));
+        process.exit(1);
+      }
+
+      const spinner = ora("Spawning desloppify agent").start();
+
+      try {
+        // Get session manager
+        const { createSessionManager, createPluginRegistry } = await import("@composio/ao-core");
+        const registry = createPluginRegistry();
+        await registry.loadBuiltins(config);
+        const sessionManager = createSessionManager({ config, registry });
+
+        // Spawn desloppify agent session
+        const session = await sessionManager.spawn({
+          projectId,
+          prompt: `You are a desloppify quality agent. Your mission: continuously improve codebase quality.
+
+Follow this workflow:
+1. Install desloppify: pip install "desloppify[full]" (if not present)
+2. Install skill: desloppify update-skill claude
+3. Run initial scan: desloppify scan --path ${options.path}
+4. Check status: desloppify status
+5. While strict_score < ${options.target}:
+   - Run: desloppify next --explain
+   - Fix the issue properly
+   - Run: desloppify resolve fixed <id>
+   - Re-scan to check progress
+
+Rules:
+- Never game the score - only genuine improvements
+- Large refactors are fine if needed
+- Always run tests after changes
+- Commit frequently with descriptive messages
+
+Target: strict_score >= ${options.target}
+Path: ${options.path}`,
+          env: {
+            DESLOPPIFY_TARGET: options.target,
+            DESLOPPIFY_PATH: options.path,
+            DESLOPPIFY_MODE: options.once ? "once" : "continuous",
+            AO_FORGE_ROLE: "desloppify",
+          },
+        });
+
+        spinner.succeed(`Desloppify agent spawned: ${chalk.green(session.id)}`);
+        console.log();
+        console.log(`  Project: ${chalk.dim(projectId)}`);
+        console.log(`  Target Score: ${chalk.dim(options.target)}`);
+        console.log(`  Scan Path: ${chalk.dim(options.path)}`);
+        console.log(`  Mode: ${chalk.dim(options.once ? "single cycle" : "continuous")}`);
+        console.log();
+        console.log(`Monitor with: ${chalk.cyan(`ao session logs ${session.id}`)}`);
+        console.log(`Check status: ${chalk.cyan(`desloppify status`)} (in session)`);
+      } catch (err) {
+        spinner.fail("Failed to spawn desloppify agent");
+        console.error(chalk.red(`✗ ${err}`));
+        process.exit(1);
+      }
+    });
 }

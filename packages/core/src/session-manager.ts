@@ -11,7 +11,7 @@
  * Reference: scripts/claude-ao-session, scripts/send-to-session
  */
 
-import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { statSync, existsSync, readdirSync, writeFileSync, mkdirSync, watch, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   isIssueNotFoundError,
@@ -476,6 +476,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       prompt: composedPrompt ?? spawnConfig.prompt,
       permissions: project.agentConfig?.permissions,
       model: project.agentConfig?.model,
+      systemPromptFile: spawnConfig.systemPromptFile,
     };
 
     let handle: RuntimeHandle;
@@ -545,6 +546,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       if (plugins.agent.postLaunchSetup) {
         await plugins.agent.postLaunchSetup(session);
+      }
+
+      // Start FORGE state sync watcher if this is a FORGE session
+      if (spawnConfig.forgeContext) {
+        startForgeStateWatcher(sessionsDir, sessionId, workspacePath);
       }
     } catch (err) {
       // Clean up runtime and workspace on post-launch failure
@@ -1149,4 +1155,85 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   }
 
   return { spawn, spawnOrchestrator, restore, list, get, kill, cleanup, send };
+}
+
+/** Watch FORGE active-workflow.md and sync state to AO metadata */
+function startForgeStateWatcher(
+  sessionsDir: string,
+  sessionId: SessionId,
+  workspacePath: string
+): void {
+  const workflowPath = join(workspacePath, ".claude", "forge", "active-workflow.md");
+
+  // Check if workflow file exists
+  if (!existsSync(workflowPath)) {
+    // File doesn't exist yet, poll for it
+    const checkInterval = setInterval(() => {
+      if (existsSync(workflowPath)) {
+        clearInterval(checkInterval);
+        watchForgeFile(sessionsDir, sessionId, workflowPath);
+      }
+    }, 5000);
+
+    // Stop polling after 5 minutes
+    setTimeout(() => clearInterval(checkInterval), 5 * 60 * 1000);
+    return;
+  }
+
+  watchForgeFile(sessionsDir, sessionId, workflowPath);
+}
+
+/** Watch FORGE workflow file and sync to metadata */
+function watchForgeFile(
+  sessionsDir: string,
+  sessionId: SessionId,
+  workflowPath: string
+): void {
+  let lastPhase: string | undefined;
+  let lastStatus: string | undefined;
+
+  const syncState = () => {
+    try {
+      const content = readFileSync(workflowPath, "utf-8");
+
+      // Parse YAML frontmatter
+      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (frontmatterMatch) {
+        const frontmatter = frontmatterMatch[1];
+        const phase = frontmatter.match(/^phase:\s*(.+)$/m)?.[1]?.trim();
+        const status = frontmatter.match(/^phase_status:\s*(.+)$/m)?.[1]?.trim();
+
+        if (phase !== lastPhase || status !== lastStatus) {
+          lastPhase = phase;
+          lastStatus = status;
+
+          // Update AO metadata
+          updateMetadata(sessionsDir, sessionId, {
+            forgePhase: phase || "",
+            forgeStatus: status || "",
+          });
+
+          console.log(`[FORGE] State sync: ${sessionId} → phase=${phase}, status=${status}`);
+        }
+      }
+    } catch (err) {
+      // Silently ignore read errors (file may be being written)
+    }
+  };
+
+  // Initial sync
+  syncState();
+
+  // Watch for changes
+  const watcher = watch(workflowPath, (eventType) => {
+    if (eventType === "change") {
+      // Debounce - wait for write to complete
+      setTimeout(syncState, 100);
+    }
+  });
+
+  // Stop watching after 2 hours (sessions don't run forever)
+  setTimeout(() => {
+    watcher.close();
+  }, 2 * 60 * 60 * 1000);
 }

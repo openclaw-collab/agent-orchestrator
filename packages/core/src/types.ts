@@ -187,6 +187,8 @@ export interface SessionSpawnConfig {
   };
   /** Additional environment variables for the session */
   env?: Record<string, string>;
+  /** Path to a file containing the system prompt to append */
+  systemPromptFile?: string;
 }
 
 /** Config for creating an orchestrator session */
