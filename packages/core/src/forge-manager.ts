@@ -63,6 +63,94 @@ function watchDebateCompletion(
   }, 30 * 60 * 1000);
 }
 
+/** Watch for security review completion and enforce gate */
+function watchSecurityReview(
+  projectPath: string,
+  debateId: string,
+  onComplete: (passed: boolean, findings: SecurityFindings) => void
+): void {
+  const securityPath = join(projectPath, "docs", "forge", "phases", "security.md");
+
+  // If security review already exists, check it immediately
+  if (existsSync(securityPath)) {
+    const findings = parseSecurityReview(securityPath);
+    console.log(`[FORGE] Security review found for ${debateId}: ${findings.verdict}`);
+    onComplete(findings.verdict === "pass", findings);
+    return;
+  }
+
+  console.log(`[FORGE] Watching for security review: ${debateId}`);
+
+  const phasesDir = join(projectPath, "docs", "forge", "phases");
+  const watcher = watch(phasesDir, (eventType, filename) => {
+    if (filename === "security.md" && existsSync(securityPath)) {
+      const findings = parseSecurityReview(securityPath);
+      console.log(`[FORGE] Security review completed for ${debateId}: ${findings.verdict}`);
+      watcher.close();
+      onComplete(findings.verdict === "pass", findings);
+    }
+  });
+
+  // Timeout after 20 minutes
+  setTimeout(() => {
+    watcher.close();
+    console.log(`[FORGE] Security review watch timeout (20min) for ${debateId}`);
+    onComplete(false, { verdict: "timeout", criticalCount: 0, highCount: 0 });
+  }, 20 * 60 * 1000);
+}
+
+/** Security findings from review */
+interface SecurityFindings {
+  verdict: "pass" | "fail" | "conditional" | "timeout";
+  criticalCount: number;
+  highCount: number;
+  mediumCount?: number;
+  report?: string;
+}
+
+/** Parse security review file for findings */
+function parseSecurityReview(securityPath: string): SecurityFindings {
+  try {
+    const content = readFileSync(securityPath, "utf-8");
+
+    // Extract YAML frontmatter
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+    let verdict: SecurityFindings["verdict"] = "fail";
+    let criticalCount = 0;
+    let highCount = 0;
+    let mediumCount = 0;
+
+    if (fmMatch) {
+      const frontmatter = fmMatch[1];
+      const verdictMatch = frontmatter.match(/verdict:\s*(\w+)/);
+      if (verdictMatch) {
+        verdict = verdictMatch[1] as SecurityFindings["verdict"];
+      }
+      const blockerMatch = frontmatter.match(/blocker_count:\s*(\d+)/);
+      if (blockerMatch) {
+        criticalCount = parseInt(blockerMatch[1], 10);
+      }
+    }
+
+    // Count issues in report body
+    const criticalMatches = content.match(/^## Critical Issues/m);
+    if (criticalMatches) {
+      const criticalSection = content.split("## Critical Issues")[1]?.split("##")[0] || "";
+      criticalCount = criticalCount || (criticalSection.match(/^\| /gm)?.length || 0) - 1;
+    }
+
+    const highMatches = content.match(/^## High Severity/m);
+    if (highMatches) {
+      const highSection = content.split("## High Severity")[1]?.split("##")[0] || "";
+      highCount = (highSection.match(/^\| /gm)?.length || 0) - 1;
+    }
+
+    return { verdict, criticalCount, highCount, mediumCount, report: content };
+  } catch {
+    return { verdict: "fail", criticalCount: 1, highCount: 0, mediumCount: 0 };
+  }
+}
+
 /** Bootstrap FORGE workspace structure */
 async function bootstrapForgeWorkspace(projectPath: string, planPath: string): Promise<void> {
   const forgeDir = join(projectPath, ".claude", "forge");
@@ -535,8 +623,32 @@ export function createForgeManager(deps: ForgeManagerDeps): ForgeManager {
       status.phases[currentPhaseIdx].completedAt = new Date();
     }
 
-    // Move to next phase
+    // SECURITY GATE: Check if we're advancing past a phase that requires security clearance
+    // Security review must pass before completing final phases
     const nextPhaseIdx = currentPhaseIdx + 1;
+    const isFinalPhase = nextPhaseIdx >= status.phases.length;
+
+    if (isFinalPhase || status.phases[nextPhaseIdx]?.name === "review") {
+      // Check security review before allowing advancement to review or completion
+      const securityPath = join(project.path, "docs", "forge", "phases", "security.md");
+      if (existsSync(securityPath)) {
+        const findings = parseSecurityReview(securityPath);
+        if (findings.verdict === "fail" || findings.criticalCount > 0) {
+          console.error(`[FORGE] 🚫 SECURITY GATE BLOCKED: ${findings.criticalCount} critical issues found`);
+          console.error(`[FORGE] Review: ${securityPath}`);
+          throw new Error(
+            `Security gate blocked advancement: ${findings.criticalCount} critical issues. ` +
+            `Resolve issues in ${securityPath} or run with --security-override (not recommended)`
+          );
+        }
+        console.log(`[FORGE] ✅ Security gate passed: ${findings.verdict}`);
+      } else {
+        console.warn(`[FORGE] ⚠️  No security review found. Run: ao forge security ${debateId}`);
+        // In strict mode, this would block. For now, warn but allow.
+      }
+    }
+
+    // Move to next phase
     if (nextPhaseIdx >= status.phases.length) {
       // All phases complete
       if (status.currentRound >= status.maxRounds) {

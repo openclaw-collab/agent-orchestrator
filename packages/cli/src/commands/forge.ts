@@ -433,4 +433,185 @@ Path: ${options.path}`,
         process.exit(1);
       }
     });
+
+  // forge security — Spawn a security reviewer agent
+  forge
+    .command("security")
+    .description("Spawn a security reviewer agent (FORGE security gate)")
+    .argument("<debate>", "Debate ID")
+    .option("--strict", "Fail on high severity issues (default: only critical)", false)
+    .option("--path <dir>", "Directory to scan", ".")
+    .option("--audit-deps", "Run dependency vulnerability audit", true)
+    .action(async (debateId: string, options: { strict?: boolean; path: string; auditDeps?: boolean }) => {
+      const config = loadConfig();
+
+      const spinner = ora("Spawning security reviewer").start();
+
+      try {
+        // Get debate status
+        const fm = await getForgeManager(config);
+        const debateStatus = await fm.getDebateStatus(debateId);
+
+        if (!debateStatus) {
+          spinner.fail(`Debate not found: ${debateId}`);
+          process.exit(1);
+        }
+
+        // Get session manager
+        const { createSessionManager, createPluginRegistry } = await import("@composio/ao-core");
+        const registry = createPluginRegistry();
+        await registry.loadBuiltins(config);
+        const sessionManager = createSessionManager({ config, registry });
+
+        // Determine project ID from debate
+        const projectId = debateStatus.projectId;
+
+        // Build security scan prompt
+        const strictMode = options.strict ? "high" : "critical";
+        const depAudit = options.auditDeps ? "Run npm audit/pip audit/etc." : "Skip dependency audit";
+
+        const securityPrompt = `You are a security reviewer agent. Perform comprehensive security analysis.
+
+## Security Scan Checklist
+
+### 1. Secret Scanning
+Search for hardcoded secrets:
+- API keys, tokens, passwords
+- Private keys (RSA, SSH, JWT)
+- Database credentials
+- AWS/Azure/GCP credentials
+
+Patterns to check:
+- api[_-]?key\\s*[:=]\\s*["\'][\\w-]+["\']
+- password\\s*[:=]\\s*["\'][^"\']+["\']
+- [A-Za-z0-9_]{32,} (high entropy strings)
+
+### 2. Injection Vulnerabilities
+- SQL/NoSQL injection (unparameterized queries)
+- Command injection (exec, eval, child_process)
+- XSS (innerHTML, React innerHTML prop)
+- LDAP/XPath injection
+
+### 3. Authentication Issues
+- Weak password policies
+- JWT vulnerabilities (none algorithm, weak secrets)
+- Session fixation
+- Missing auth checks
+
+### 4. Authorization Issues
+- IDOR (predictable IDs without ownership check)
+- Missing access control
+- Privilege escalation paths
+
+### 5. Input Validation
+- Unvalidated file uploads
+- Path traversal (../ in paths)
+- Open redirects
+- SSRF vulnerabilities
+
+### 6. Configuration
+- Debug mode in production
+- Insecure CORS (allowing *)
+- Missing security headers
+- Weak TLS/cipher suites
+
+### 7. Dependency Audit
+${depAudit}
+- Check package-lock.json / yarn.lock / requirements.txt
+- Look for known CVEs
+- Flag outdated packages with security fixes
+
+## Process
+
+1. Search codebase for security anti-patterns
+2. Check configuration files
+3. Audit authentication/authorization code
+4. Review input handling
+5. ${depAudit}
+
+## Output
+
+Write findings to: docs/forge/phases/security.md
+
+Format:
+\`\`\`markdown
+---
+phase: security
+debate_id: ${debateId}
+completed_at: ISO_TIMESTAMP
+verdict: pass|fail|conditional
+blocker_count: N
+---
+
+## Executive Summary
+Brief overview of security posture
+
+## Critical Issues (BLOCK MERGE)
+| File | Line | Issue | Severity | Fix |
+|------|------|-------|----------|-----|
+| src/auth.ts | 45 | Hardcoded JWT secret | Critical | Use env var |
+
+## High Severity
+| File | Line | Issue | Severity | Fix |
+|------|------|-------|----------|-----|
+| src/api.ts | 12 | Missing rate limit | High | Add middleware |
+
+## Medium/Low Severity
+...
+
+## Dependency Audit
+- Critical CVEs: X
+- High CVEs: Y
+- Outdated with fixes: Z
+
+## Verdict
+- [ ] PASS - No ${strictMode} severity issues
+- [ ] FAIL - Issues must be resolved
+
+## Recommendations
+1. Immediate actions
+2. Short-term improvements
+3. Long-term security posture
+\`\`\`
+
+## Rules
+
+- Document every finding with file:line reference
+- Provide specific remediation steps
+- Use tools to search systematically
+- ${options.strict ? "FAIL on any high or critical issue" : "FAIL only on critical issues"}
+- If NO critical issues found, verdict is PASS`;
+
+        // Spawn security reviewer session
+        const session = await sessionManager.spawn({
+          projectId,
+          prompt: securityPrompt,
+          env: {
+            AO_FORGE_DEBATE_ID: debateId,
+            AO_FORGE_ROLE: "security-reviewer",
+            AO_FORGE_PHASE: "security",
+            SECURITY_STRICT_MODE: options.strict ? "true" : "false",
+            SECURITY_SCAN_PATH: options.path,
+            CLAUDE_ENV: "forge",
+          },
+        });
+
+        spinner.succeed(`Security reviewer spawned: ${chalk.green(session.id)}`);
+        console.log();
+        console.log(`  Debate: ${chalk.dim(debateId)}`);
+        console.log(`  Project: ${chalk.dim(projectId)}`);
+        console.log(`  Scan Path: ${chalk.dim(options.path)}`);
+        console.log(`  Strict Mode: ${chalk.dim(options.strict ? "high+" : "critical only")}`);
+        console.log(`  Dep Audit: ${chalk.dim(options.auditDeps ? "enabled" : "disabled")}`);
+        console.log();
+        console.log(chalk.yellow("⚠️  Security gate will block workflow if critical issues found"));
+        console.log();
+        console.log(`Monitor with: ${chalk.cyan(`ao session logs ${session.id}`)}`);
+        console.log(`Check status: ${chalk.cyan(`ao forge status ${debateId}`)}`);
+      } catch (err) {
+        spinner.fail("Failed to spawn security reviewer");
+        console.error(chalk.red(`✗ ${err}`));
+        process.exit(1);
+      }
+    });
 }
